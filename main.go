@@ -3,15 +3,19 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"time"
 
 	"git.0xdad.com/tblyler/meditime/config"
 	"git.0xdad.com/tblyler/meditime/db"
 	"github.com/google/uuid"
+	"github.com/gregdel/pushover"
+	"github.com/robfig/cron/v3"
 )
 
 func errLog(messages ...interface{}) {
@@ -25,7 +29,9 @@ func log(messages ...interface{}) {
 func help() {
 }
 
-func run(b *db.Badger) error {
+func run(ctx context.Context, b *db.Badger, pushoverClient *pushover.Pushover) error {
+	cron := cron.New()
+
 	users, err := b.ListUsers()
 	if err != nil {
 		return err
@@ -38,13 +44,49 @@ func run(b *db.Badger) error {
 		}
 
 		for _, medication := range medications {
-			// FIXME do the stuff
-			fmt.Println(user)
-			fmt.Println(medication)
+			_, err = cron.AddFunc(medication.IntervalCrontab, func() {
+				for _, device := range medication.IntervalPushoverDevices {
+					deviceToken, ok := user.PushoverDeviceTokens[device]
+					if !ok {
+						errLog(fmt.Sprintf(
+							"invalid device name %s for id medication %s for id user %s",
+							device,
+							medication.ID.String(),
+							user.ID.String(),
+						))
+						continue
+					}
+
+					_, err := pushoverClient.SendMessage(
+						&pushover.Message{
+							Message:  fmt.Sprintf("take %d dose(s) of %s", medication.IntervalQuantity, medication.Name),
+							Priority: pushover.PriorityEmergency,
+							Retry:    time.Minute * 5,
+							Expire:   time.Hour * 24,
+						},
+						pushover.NewRecipient(deviceToken),
+					)
+					if err != nil {
+						errLog(fmt.Sprintf(
+							"failed to send message to id user's (%s) device (%s): %v",
+							user.ID.String(),
+							device,
+							err,
+						))
+					}
+				}
+			})
+			if err != nil {
+				return fmt.Errorf("failed to add medication ID %s to cron: %w", medication.ID.String(), err)
+			}
 		}
 	}
 
-	return nil
+	cron.Start()
+	<-ctx.Done()
+	<-cron.Stop().Done()
+
+	return ctx.Err()
 }
 
 func main() {
@@ -55,11 +97,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	err := func() error {
 		inputScanner := bufio.NewScanner(os.Stdin)
 		config := config.Env{}
 
 		badgerPath, err := config.BadgerPath()
+		if err != nil {
+			return err
+		}
+
+		pushoverAPIToken, err := config.PushoverAPIToken()
 		if err != nil {
 			return err
 		}
@@ -71,9 +121,11 @@ func main() {
 
 		defer b.Close()
 
+		pushoverClient := pushover.New(pushoverAPIToken)
+
 		switch os.Args[1] {
 		case "run":
-			return run(b)
+			return run(ctx, b, pushoverClient)
 
 		case "user":
 			if lenArgs < 3 {
@@ -193,12 +245,12 @@ func main() {
 					return fmt.Errorf("failed to get interval quantity from STDIN prompt: %w", inputScanner.Err())
 				}
 
-				fmt.Print("interval pushover device token id: ")
+				fmt.Print("interval pushover device token name: ")
 				inputScanner.Scan()
 
 				intervalPushoverDevice := string(bytes.TrimSpace(inputScanner.Bytes()))
 				if _, ok := user.PushoverDeviceTokens[intervalPushoverDevice]; !ok {
-					return fmt.Errorf("the '%s' pushover device token doesn't exist for user %s", intervalPushoverDevice, user.Name)
+					return fmt.Errorf("the '%s' pushover device token name doesn't exist for user %s", intervalPushoverDevice, user.Name)
 				}
 
 				medication := &db.Medication{
