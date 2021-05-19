@@ -270,6 +270,36 @@ func main() {
 
 				log(medication)
 
+			case "remove":
+				fmt.Print("username: ")
+				inputScanner.Scan()
+
+				username := string(bytes.TrimSpace(inputScanner.Bytes()))
+				if username == "" {
+					return fmt.Errorf("failed to get username from STDIN prompt: %w", inputScanner.Err())
+				}
+
+				user, err := b.GetUser(username)
+				if err != nil {
+					return fmt.Errorf("failed to lookup username %s: %w", username, err)
+				}
+
+				if user == nil {
+					return fmt.Errorf("username %s doesn't exist", username)
+				}
+
+				fmt.Print("medication id: ")
+				inputScanner.Scan()
+
+				medicationID := uuid.MustParse(string(bytes.TrimSpace(inputScanner.Bytes())))
+				err = b.RemoveMedication(&db.Medication{
+					IDUser: user.ID,
+					ID:     medicationID,
+				})
+				if err != nil {
+					return err
+				}
+
 			case "list":
 				fmt.Print("username: ")
 				inputScanner.Scan()

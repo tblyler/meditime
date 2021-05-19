@@ -148,6 +148,13 @@ func (b *Badger) AddMedication(medication *Medication) error {
 	})
 }
 
+// RemoveMedication from the database
+func (b *Badger) RemoveMedication(medication *Medication) error {
+	return b.db.Update(func(tx *badger.Txn) error {
+		return tx.Delete(medication.badgerKey())
+	})
+}
+
 // ListMedicationsForUser from the database
 func (b *Badger) ListMedicationsForUser(user *User) (medications []*Medication, err error) {
 	err = b.db.View(func(tx *badger.Txn) error {
